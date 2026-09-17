@@ -27,16 +27,6 @@ extension ProvidersPane {
             provider: provider,
             settings: self.settings,
             store: self.store,
-            boolBinding: { keyPath in
-                Binding(
-                    get: { self.settings[keyPath: keyPath] },
-                    set: { self.settings[keyPath: keyPath] = $0 })
-            },
-            stringBinding: { keyPath in
-                Binding(
-                    get: { self.settings[keyPath: keyPath] },
-                    set: { self.settings[keyPath: keyPath] = $0 })
-            },
             statusText: { id in
                 statusTextByID[id]
             },
@@ -68,7 +58,7 @@ extension ProvidersPane {
     }
 
     func _test_menuCardModel(for provider: UsageProvider) -> UsageMenuCardView.Model {
-        self.menuCardModel(for: provider)
+        self.store.menuCardModel(for: provider, context: .settings)
     }
 
     func _test_openAIWebDiagnostic(for provider: UsageProvider) -> String? {

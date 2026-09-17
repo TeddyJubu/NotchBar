@@ -20,14 +20,14 @@ public enum AntigravityQuotaFamilyVisibility {
         }
     }
 
-    package enum KnownFamily: String {
+    public enum KnownFamily: String, CaseIterable {
         case gemini
         case claudeGPT = "claude-gpt"
     }
 
     /// Stable bucket IDs take precedence over display titles on every surface.
     /// Provider-specific by design: these tokens classify Antigravity quota families, not provider routing.
-    package static func knownFamily(windowID: String, title: String) -> KnownFamily? {
+    public static func knownFamily(windowID: String, title: String) -> KnownFamily? {
         guard AntigravityStatusSnapshot.isQuotaSummaryWindowID(windowID) else { return nil }
         let id = windowID.lowercased()
         if id.contains("gemini") { return .gemini }

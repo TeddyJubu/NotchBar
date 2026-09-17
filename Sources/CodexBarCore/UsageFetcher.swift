@@ -151,6 +151,8 @@ public struct UsageSnapshot: Codable, Sendable {
     public let details: [ProviderDetailSection]
     public let deepseekDetailedUsageState: DeepSeekDetailedUsageState
     public let deepseekPlatformProfiles: [DeepSeekPlatformProfile]
+    /// Live-only ownership proof; decoded usage cannot authorize browser balance retention.
+    public let deepseekPlatformBalanceOwner: DeepSeekPlatformBalanceOwner?
     public let opencodegoUsage: OpenCodeGoUsageSnapshot?
     public let openAIAPIUsage: OpenAIAPIUsageSnapshot?
     public let codexResetCredits: CodexRateLimitResetCreditsSnapshot?
@@ -200,6 +202,7 @@ public struct UsageSnapshot: Codable, Sendable {
         details: [ProviderDetailSection] = [],
         deepseekDetailedUsageState: DeepSeekDetailedUsageState = .notRequested,
         deepseekPlatformProfiles: [DeepSeekPlatformProfile] = [],
+        deepseekPlatformBalanceOwner: DeepSeekPlatformBalanceOwner? = nil,
         opencodegoUsage: OpenCodeGoUsageSnapshot? = nil,
         openAIAPIUsage: OpenAIAPIUsageSnapshot? = nil,
         codexResetCredits: CodexRateLimitResetCreditsSnapshot? = nil,
@@ -226,6 +229,7 @@ public struct UsageSnapshot: Codable, Sendable {
         self.details = details
         self.deepseekDetailedUsageState = deepseekDetailedUsageState
         self.deepseekPlatformProfiles = deepseekPlatformProfiles
+        self.deepseekPlatformBalanceOwner = deepseekPlatformBalanceOwner
         self.opencodegoUsage = opencodegoUsage
         self.openAIAPIUsage = openAIAPIUsage
         self.codexResetCredits = codexResetCredits
@@ -285,6 +289,7 @@ public struct UsageSnapshot: Codable, Sendable {
         try ProviderDetailSection.validateSections(self.details)
         self.deepseekDetailedUsageState = .notRequested // Live-only fetch state
         self.deepseekPlatformProfiles = [] // Live-only browser profile catalog
+        self.deepseekPlatformBalanceOwner = nil // Live-only balance ownership
         self.opencodegoUsage = nil // Not persisted, fetched fresh each time
         self.openAIAPIUsage = try container.decodeIfPresent(OpenAIAPIUsageSnapshot.self, forKey: .openAIAPIUsage)
         self.codexResetCredits = try container.decodeIfPresent(
@@ -357,14 +362,7 @@ public struct UsageSnapshot: Codable, Sendable {
     }
 
     public func automaticPerplexityWindow() -> RateWindow? {
-        let fallbackWindows = self.orderedPerplexityFallbackWindows()
-        guard let primary = self.primary else {
-            return fallbackWindows.first
-        }
-        if primary.remainingPercent > 0 || fallbackWindows.isEmpty {
-            return primary
-        }
-        return fallbackWindows.first
+        self.orderedPerplexityDisplayWindows().first
     }
 
     public func orderedPerplexityDisplayWindows() -> [RateWindow] {
@@ -527,6 +525,7 @@ public struct UsageSnapshot: Codable, Sendable {
             details: details.resolving(self.details),
             deepseekDetailedUsageState: deepseekDetailedUsageState.resolving(self.deepseekDetailedUsageState),
             deepseekPlatformProfiles: deepseekPlatformProfiles.resolving(self.deepseekPlatformProfiles),
+            deepseekPlatformBalanceOwner: self.deepseekPlatformBalanceOwner,
             opencodegoUsage: self.opencodegoUsage,
             openAIAPIUsage: self.openAIAPIUsage,
             codexResetCredits: codexResetCredits.resolving(self.codexResetCredits),
@@ -845,11 +844,6 @@ enum RPCWireError: Error, LocalizedError {
     }
 }
 
-private enum RPCRequestRaceResult<Value: Sendable>: Sendable {
-    case value(Value)
-    case timedOut
-}
-
 /// RPC helper used on background tasks; safe because we confine it to the owning task.
 private final class CodexRPCClient: @unchecked Sendable {
     // Provider-specific by design: Codex RPC owns its dedicated subprocess log category.
@@ -1000,57 +994,29 @@ private final class CodexRPCClient: @unchecked Sendable {
         try self.sendRequest(id: id, method: method, params: params)
 
         let resolvedTimeout = timeout ?? self.requestTimeoutSeconds
-        let wrapped = try await self.withTimeout(seconds: resolvedTimeout, method: method) {
-            while true {
-                let message = try await self.readNextMessage()
+        let wrapped = try await RPCRequestTimeout.run(
+            seconds: resolvedTimeout,
+            timeoutError: RPCWireError.timeout(method: method),
+            onTimeout: { self.terminateProcessForTimeout(method: method) },
+            operation: {
+                while true {
+                    let message = try await self.readNextMessage()
 
-                if message["id"] == nil, let methodName = message["method"] as? String {
-                    Self.log.debug("[codex notify] \(methodName)")
-                    continue
+                    if message["id"] == nil, let methodName = message["method"] as? String {
+                        Self.log.debug("[codex notify] \(methodName)")
+                        continue
+                    }
+
+                    guard let messageID = self.jsonID(message["id"]), messageID == id else { continue }
+
+                    if let error = message["error"] as? [String: Any], let messageText = error["message"] as? String {
+                        throw RPCWireError.requestFailed(messageText)
+                    }
+
+                    return SendableJSONMessage(value: message)
                 }
-
-                guard let messageID = self.jsonID(message["id"]), messageID == id else { continue }
-
-                if let error = message["error"] as? [String: Any], let messageText = error["message"] as? String {
-                    throw RPCWireError.requestFailed(messageText)
-                }
-
-                return SendableJSONMessage(value: message)
-            }
-        }
+            })
         return wrapped.value
-    }
-
-    private func withTimeout<T: Sendable>(
-        seconds: TimeInterval,
-        method: String,
-        body: @escaping @Sendable () async throws -> T) async throws -> T
-    {
-        try await withThrowingTaskGroup(of: RPCRequestRaceResult<T>.self) { group in
-            group.addTask {
-                try await .value(body())
-            }
-            group.addTask {
-                try await Task.sleep(for: .seconds(seconds))
-                return .timedOut
-            }
-
-            guard let result = try await group.next() else {
-                group.cancelAll()
-                throw RPCWireError.timeout(method: method)
-            }
-            group.cancelAll()
-
-            switch result {
-            case let .value(value):
-                return value
-            case .timedOut:
-                // Terminating the process closes stdout. Classify that expected EOF as a
-                // timeout by selecting the timer before requesting process termination.
-                self.terminateProcessForTimeout(method: method)
-                throw RPCWireError.timeout(method: method)
-            }
-        }
     }
 
     private func terminateProcessForTimeout(method: String) {

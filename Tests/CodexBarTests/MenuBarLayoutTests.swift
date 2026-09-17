@@ -95,7 +95,6 @@ struct MenuBarLayoutTests {
 
     @Test
     func `conditional normalization clamps thresholds and clause count`() {
-        let predicate = MenuBarConditionalPredicate(metric: .session, comparison: .greaterThan, threshold: 0)
         let manyClauses = (0..<6).map { index in
             MenuBarConditionalClause(
                 combinator: index == 0 ? .or : .and,
@@ -848,8 +847,8 @@ struct MenuBarLayoutTests {
     }
 
     @Test
-    func `opencode go exposes the monthly tertiary lane once a window exists`() {
-        #expect(MenuBarLayoutLane.available(for: .opencodego) == [.primary, .secondary])
+    func `opencode go exposes the monthly tertiary lane before data arrives`() {
+        #expect(MenuBarLayoutLane.available(for: .opencodego) == [.primary, .secondary, .tertiary])
 
         let usageSnapshot = UsageSnapshot(
             primary: nil,

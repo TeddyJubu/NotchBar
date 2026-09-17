@@ -653,7 +653,7 @@ extension ClaudeWebAPIFetcher {
         if let fiveHour {
             sessionPercent = Self.percentValue(from: fiveHour["utilization"])
             if let resetsAt = fiveHour["resets_at"] as? String {
-                sessionResets = self.parseISO8601Date(resetsAt)
+                sessionResets = ISO8601DateParser.parse(resetsAt)
             }
         }
         // Enterprise/credit-based accounts return null for five_hour; treat as 0% rather than an error.
@@ -668,7 +668,7 @@ extension ClaudeWebAPIFetcher {
         if let sevenDay = json["seven_day"] as? [String: Any] {
             weeklyPercent = Self.percentValue(from: sevenDay["utilization"])
             if let resetsAt = sevenDay["resets_at"] as? String {
-                weeklyResets = self.parseISO8601Date(resetsAt)
+                weeklyResets = ISO8601DateParser.parse(resetsAt)
             }
         }
 
@@ -737,17 +737,6 @@ extension ClaudeWebAPIFetcher {
         self.parseAccountInfo(data, orgId: orgId)
     }
     #endif
-
-    private static func parseISO8601Date(_ string: String) -> Date? {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: string) {
-            return date
-        }
-        // Try without fractional seconds
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: string)
-    }
 
     private static func parseOrganizationResponse(
         _ data: Data,
@@ -1418,24 +1407,26 @@ extension ClaudeWebAPIFetcher {
         // unconditionally denied. Only if that attempt itself comes back empty do we surface the original,
         // more informative cached-auth error instead of a misleading "no session key found" — mirroring the
         // equivalent Ollama recovery in `OllamaStatusFetchStrategy.fetchAutomatic`.
+        let sessionInfo: SessionKeyInfo
         do {
-            let sessionInfo = try extractSessionKeyInfo(browserDetection: browserDetection, logger: log)
-            log("Found session key (\(sessionInfo.cookieCount) cookies)")
-
-            return try await self.fetchUsage(
-                using: sessionInfo,
-                options: options,
-                logger: log,
-                cachePersistence: CachePersistence(
-                    sourceLabel: sessionInfo.sourceLabel,
-                    expectedObservation: cacheObservation,
-                    persistInitialSessionKey: true))
+            sessionInfo = try self.extractSessionKeyInfo(browserDetection: browserDetection, logger: log)
         } catch {
             if let invalidatedCacheError {
                 throw invalidatedCacheError
             }
             throw error
         }
+        log("Found session key (\(sessionInfo.cookieCount) cookies)")
+
+        // Recovery found a new session: report that request's failure, not the invalidated cookie's error.
+        return try await self.fetchUsage(
+            using: sessionInfo,
+            options: options,
+            logger: log,
+            cachePersistence: CachePersistence(
+                sourceLabel: sessionInfo.sourceLabel,
+                expectedObservation: cacheObservation,
+                persistInitialSessionKey: true))
     }
 }
 #endif
