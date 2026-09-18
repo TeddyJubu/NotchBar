@@ -548,7 +548,9 @@ final class SessionQuotaNotifier: SessionQuotaNotifying {
         let transitionText = String(describing: transition)
         let idPrefix = "session-\(providerText)-\(transitionText)"
         self.logger.info("enqueuing", metadata: ["prefix": idPrefix])
-        AppNotifications.shared.post(idPrefix: idPrefix, title: title, body: body, badge: badge)
+        let notice = NotchCodingAgentNotification(quotaTransition: transition, providerName: providerName)
+        NotchQuotaNoticeRouting.post(notice)
+        AppNotifications.shared.post(idPrefix: idPrefix, title: title, body: body, badge: badge, notchRouted: true)
     }
 
     func postQuotaWarning(
@@ -581,7 +583,13 @@ final class SessionQuotaNotifier: SessionQuotaNotifying {
                 window: event.window,
                 threshold: threshold,
                 postedAt: Date()))
-        AppNotifications.shared.post(idPrefix: idPrefix, title: copy.title, body: copy.body, soundEnabled: false)
+        NotchQuotaNoticeRouting.post(NotchCodingAgentNotification(quotaWarning: event, providerName: providerName))
+        AppNotifications.shared.post(
+            idPrefix: idPrefix,
+            title: copy.title,
+            body: copy.body,
+            soundEnabled: false,
+            notchRouted: true)
     }
 
     func postPredictivePaceWarning(
@@ -604,7 +612,16 @@ final class SessionQuotaNotifier: SessionQuotaNotifying {
         if onScreenAlertEnabled {
             self.alertOverlay.show(title: copy.title, message: copy.body)
         }
-        AppNotifications.shared.post(idPrefix: idPrefix, title: copy.title, body: copy.body, soundEnabled: false)
+        NotchQuotaNoticeRouting.post(NotchCodingAgentNotification(
+            predictivePaceWarning: event,
+            providerName: providerName,
+            now: now))
+        AppNotifications.shared.post(
+            idPrefix: idPrefix,
+            title: copy.title,
+            body: copy.body,
+            soundEnabled: false,
+            notchRouted: true)
     }
 }
 

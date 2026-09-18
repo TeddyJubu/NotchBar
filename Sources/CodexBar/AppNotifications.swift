@@ -7,11 +7,16 @@ final class AppNotifications {
     static let shared = AppNotifications()
 
     private let centerProvider: @Sendable () -> UNUserNotificationCenter
+    private let channelPolicyProvider: @MainActor @Sendable () -> NotchNoticeChannelPolicy
     private let logger = CodexBarLog.logger(LogCategories.notifications)
     private var authorizationTask: Task<Bool, Never>?
 
-    init(centerProvider: @escaping @Sendable () -> UNUserNotificationCenter = { UNUserNotificationCenter.current() }) {
+    init(
+        centerProvider: @escaping @Sendable () -> UNUserNotificationCenter = { UNUserNotificationCenter.current() },
+        channelPolicyProvider: @escaping @MainActor @Sendable () -> NotchNoticeChannelPolicy = { .live })
+    {
         self.centerProvider = centerProvider
+        self.channelPolicyProvider = channelPolicyProvider
     }
 
     func requestAuthorizationOnStartup() {
@@ -24,9 +29,14 @@ final class AppNotifications {
         title: String,
         body: String,
         badge: NSNumber? = nil,
-        soundEnabled: Bool = true)
+        soundEnabled: Bool = true,
+        notchRouted: Bool = false)
     {
         guard !Self.isRunningUnderTests else { return }
+        if self.shouldSuppressOSPost(notchRouted: notchRouted) {
+            self.logger.debug("notch will show; suppressing OS post", metadata: ["prefix": idPrefix])
+            return
+        }
         let center = self.centerProvider()
         let logger = self.logger
 
@@ -56,6 +66,13 @@ final class AppNotifications {
                 logger.error("failed to post", metadata: ["prefix": idPrefix, "error": errorText])
             }
         }
+    }
+
+    /// Single-channel rule: suppress the OS banner only for notices already
+    /// routed to the notch queue when T1/T2 will show. Everything else —
+    /// unrouted posts or a notch that cannot show — keeps the OS fallback.
+    func shouldSuppressOSPost(notchRouted: Bool) -> Bool {
+        notchRouted && self.channelPolicyProvider().showsNotchNotice
     }
 
     // MARK: - Private

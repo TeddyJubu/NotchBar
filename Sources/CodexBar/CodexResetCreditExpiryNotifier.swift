@@ -11,7 +11,7 @@ struct CodexResetCreditExpiryNotifier {
 
     var userDefaults: UserDefaults = .standard
     var notificationPoster: (String, String, String) -> Void = { prefix, title, body in
-        AppNotifications.shared.post(idPrefix: prefix, title: title, body: body)
+        AppNotifications.shared.post(idPrefix: prefix, title: title, body: body, notchRouted: true)
     }
 
     func postExpiringCreditsIfNeeded(
@@ -46,6 +46,13 @@ struct CodexResetCreditExpiryNotifier {
         else {
             return
         }
+        // Provider-specific by design: this notifier watches the Codex reset-credit snapshot only.
+        let providerName = ProviderDescriptorRegistry.descriptor(for: .codex).metadata.displayName
+        NotchQuotaNoticeRouting.post(NotchCodingAgentNotification(
+            creditExpiryTitle: L("Limit Reset Credits"),
+            body: presentation.helpText,
+            providerName: providerName,
+            now: now))
         self.notificationPoster(
             Self.notificationPrefix,
             L("Limit Reset Credits"),

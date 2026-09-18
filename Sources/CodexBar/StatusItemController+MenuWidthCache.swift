@@ -57,7 +57,8 @@ extension StatusItemController {
             agentSessionLabelStyle: self.settings.agentSessionLabelStyle,
             agentSessionsHideUnreachableHosts: self.settings.agentSessionsHideUnreachableHosts,
             localAgentSessions: self.agentSessions.localSessions,
-            remoteAgentHosts: self.agentSessions.remoteHosts)
+            remoteAgentHosts: self.agentSessions.remoteHosts,
+            includeNotchSection: MenuDescriptor.notchSectionEnabled())
     }
 
     func measuredStandardMenuWidth(
@@ -169,6 +170,8 @@ extension StatusItemController {
             "copyError:\(message)"
         case let .focusAgentSession(session, remoteHost):
             "focusAgentSession:\(remoteHost ?? "local"):\(session.id)"
+        case .showNotchAlerts:
+            "showNotchAlerts"
         }
     }
 }

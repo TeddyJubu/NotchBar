@@ -25,6 +25,7 @@ extension StatusItemController {
         case let .copyError(message): (#selector(self.copyError(_:)), message)
         case let .focusAgentSession(session, remoteHost):
             (#selector(self.focusAgentSession(_:)), [session.id, remoteHost ?? ""])
+        case .showNotchAlerts: (#selector(self.showNotchAlertsFromMenu(_:)), nil)
         }
     }
 

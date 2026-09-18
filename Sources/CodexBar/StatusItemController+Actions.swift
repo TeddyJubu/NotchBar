@@ -146,6 +146,12 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
         self.refreshMenuProviderNow(in: sender.menu)
     }
 
+    /// Show Alerts (status-menu Notch section): the notch controller owns the
+    /// panel, so this posts and the controller opens ALERTS + makes-key.
+    @objc func showNotchAlertsFromMenu(_ sender: NSMenuItem) {
+        NotificationCenter.default.post(name: .codexBarShowNotchAlerts, object: nil)
+    }
+
     func refreshMenuProviderNow(in menu: NSMenu?) {
         let originatingMenuID = menu.map(ObjectIdentifier.init)
         let originatingMenuInteractionGeneration = originatingMenuID.flatMap {
@@ -502,11 +508,13 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
             return
         }
         guard self.settings.hasUnreadableManagedCodexAccountStore == false else {
+            // Provider-specific by design: unreadable managed Codex account storage is a Codex-only failure.
             self.presentLoginAlert(
                 title: L("Managed Codex accounts unavailable"),
                 message: L(
                     "CodexBar could not read managed account storage. " +
-                        "Recover the store before adding another account."))
+                        "Recover the store before adding another account."),
+                loginFailureProvider: .codex)
             return
         }
 
@@ -535,7 +543,8 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
             guard let self else { return }
             let result = await self.codexAccountPromotionCoordinator.promote(managedAccountID: managedAccountID)
             if case let .failure(error) = result {
-                self.presentLoginAlert(title: error.title, message: error.message)
+                // Provider-specific by design: Codex account promotion failures route by the Codex literal.
+                self.presentLoginAlert(title: error.title, message: error.message, loginFailureProvider: .codex)
             }
         }
     }
@@ -741,7 +750,8 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
 
     func presentCodexLoginResult(_ result: CLILoginRunner.Result) {
         guard let info = CodexLoginAlertPresentation.alertInfo(for: result) else { return }
-        self.presentLoginAlert(title: info.title, message: info.message)
+        // Provider-specific by design: the Codex login-result presenter routes by the Codex literal.
+        self.presentLoginAlert(title: info.title, message: info.message, loginFailureProvider: .codex)
     }
 
     private func presentManagedCodexAccountError(_ error: Error) {
@@ -757,7 +767,8 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
             LoginAlertInfo(title: L("Could not add Codex account"), message: error.localizedDescription)
         }
 
-        self.presentLoginAlert(title: info.title, message: info.message)
+        // Provider-specific by design: managed Codex account errors route by the Codex literal.
+        self.presentLoginAlert(title: info.title, message: info.message, loginFailureProvider: .codex)
     }
 
     func presentClaudeLoginResult(_ result: ClaudeLoginRunner.Result) {
@@ -767,17 +778,22 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
         case .missingBinary:
             self.presentLoginAlert(
                 title: L("Claude CLI not found"),
-                message: L("Install the Claude CLI (npm i -g @anthropic-ai/claude-code) and try again."))
+                message: L("Install the Claude CLI (npm i -g @anthropic-ai/claude-code) and try again."),
+                loginFailureProvider: .claude)
         case let .launchFailed(message):
-            self.presentLoginAlert(title: L("Could not start Claude Code login"), message: message)
+            self.presentLoginAlert(
+                title: L("Could not start Claude Code login"),
+                message: message,
+                loginFailureProvider: .claude)
         case .timedOut:
             self.presentLoginAlert(
                 title: L("Claude login timed out"),
-                message: self.trimmedLoginOutput(result.output))
+                message: self.trimmedLoginOutput(result.output),
+                loginFailureProvider: .claude)
         case let .failed(status):
             let statusLine = String(format: L("claude auth login exited with status %d."), status)
             let message = self.trimmedLoginOutput(result.output.isEmpty ? statusLine : result.output)
-            self.presentLoginAlert(title: L("Claude login failed"), message: message)
+            self.presentLoginAlert(title: L("Claude login failed"), message: message, loginFailureProvider: .claude)
         }
     }
 
@@ -830,8 +846,9 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
     @discardableResult
     func presentGeminiLoginResult(_ result: GeminiLoginRunner.Result) -> Bool {
         guard let info = Self.geminiLoginAlertInfo(for: result) else { return false }
+        // Provider-specific by design: Gemini and Antigravity login results route by their own literals.
         guard let confirmButtonTitle = info.confirmButtonTitle else {
-            self.presentLoginAlert(title: info.title, message: info.message)
+            self.presentLoginAlert(title: info.title, message: info.message, loginFailureProvider: .gemini)
             return false
         }
         return self.presentLoginConfirmation(
@@ -842,7 +859,7 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
 
     func presentAntigravityLoginResult(_ result: AntigravityLoginRunner.Result) {
         guard let info = Self.antigravityLoginAlertInfo(for: result) else { return }
-        self.presentLoginAlert(title: info.title, message: info.message)
+        self.presentLoginAlert(title: info.title, message: info.message, loginFailureProvider: .antigravity)
     }
 
     struct LoginAlertInfo: Equatable {
@@ -900,10 +917,23 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
         return alert.runModal() == .alertSecondButtonReturn
     }
 
-    func presentLoginAlert(title: String, message: String) {
+    /// Modal login alert plus, for failures, a critical T2 notch notice with the
+    /// same copy. The modal always shows; `loginFailureProvider` identifies a
+    /// failed login and `nil` keeps modal-only for progress/info alerts (Kiro
+    /// browser-progress, JetBrains status). Emission is gated by
+    /// `NotchLoginFailureNotices.isEnabled` (overnight default on, morning review).
+    func presentLoginAlert(title: String, message: String, loginFailureProvider: UsageProvider? = nil) {
+        let resolvedTitle = L(title)
+        let resolvedMessage = L(message)
+        if let loginFailureProvider, NotchLoginFailureNotices.isEnabled() {
+            NotchQuotaNoticeRouting.post(NotchCodingAgentNotification(
+                loginFailureTitle: resolvedTitle,
+                body: resolvedMessage,
+                provider: loginFailureProvider))
+        }
         let alert = NSAlert()
-        alert.messageText = L(title)
-        alert.informativeText = L(message)
+        alert.messageText = resolvedTitle
+        alert.informativeText = resolvedMessage
         alert.alertStyle = .warning
         alert.runModal()
     }
@@ -935,7 +965,8 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
             // User closed the window; no alert needed
             return
         case let .failed(message):
-            self.presentLoginAlert(title: L("Cursor login failed"), message: message)
+            // Provider-specific by design: Cursor login failures route by the Cursor literal.
+            self.presentLoginAlert(title: L("Cursor login failed"), message: message, loginFailureProvider: .cursor)
         }
     }
 

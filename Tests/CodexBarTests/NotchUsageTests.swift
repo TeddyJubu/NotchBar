@@ -4,6 +4,27 @@ import Testing
 @testable import CodexBar
 
 struct NotchUsageTests {
+    @Test(arguments: [
+        ("codex", "com.openai.codex"),
+        ("claude", "com.anthropic.claudefordesktop"),
+        ("cursor", "com.todesktop.230313mzl4w4u92"),
+        ("antigravity", "com.google.antigravity"),
+        ("windsurf", "com.exafunction.windsurf"),
+    ])
+    func `desktop provider dims after quit and restores on launch`(id: String, bundleID: String) {
+        let provider = NotchUsageProvider(id: id, name: id, windows: [], updatedAt: nil, error: nil)
+        #expect(provider.appIsRunning(in: [bundleID]))
+        #expect(!provider.appIsRunning(in: []))
+        #expect(!provider.appIsRunning(in: [bundleID + ".helper"]))
+        #expect(provider.appIsRunning(in: [bundleID]))
+    }
+
+    @Test
+    func `providers without a desktop app retain their appearance`() {
+        let provider = NotchUsageProvider(id: "gemini", name: "Gemini", windows: [], updatedAt: nil, error: nil)
+        #expect(provider.appIsRunning(in: []))
+    }
+
     @Test(arguments: [CGPoint.zero, CGPoint(x: -1512, y: 200), CGPoint(x: 350, y: 982)])
     func `panel stays below the screen top and follows the notch on offset displays`(origin: CGPoint) throws {
         let screen = CGRect(origin: origin, size: CGSize(width: 1512, height: 982))
@@ -14,6 +35,8 @@ struct NotchUsageTests {
             rightArea: CGRect(x: screen.minX + 856, y: screen.maxY - 32, width: 656, height: 32)))
 
         #expect(geometry.notchWidth == 200)
+        #expect(geometry.compactSize.width == 210)
+        #expect(geometry.compactSize.height == geometry.closedHeight + 20)
         for expanded in [false, true] {
             let frame = geometry.frame(expanded: expanded)
             #expect(frame.midX == screen.midX)
@@ -55,6 +78,191 @@ struct NotchUsageTests {
         #expect(presentation.selected?.id == "codex")
         presentation.providers = []
         #expect(presentation.selected == nil)
+    }
+
+    @Test
+    func `compact row keeps three providers in configured order independently of details selection`() {
+        let providers = (1...4).map {
+            NotchUsageProvider(id: "provider-\($0)", name: "Provider \($0)", windows: [], updatedAt: nil, error: nil)
+        }
+        var presentation = NotchUsagePresentation(providers: providers, selectedID: "provider-4")
+        #expect(presentation.compactProviders.map(\.id) == ["provider-1", "provider-2", "provider-3"])
+        presentation.providers = Array(providers.prefix(1))
+        #expect(presentation.compactProviders.count == 1)
+        presentation.providers = []
+        #expect(presentation.compactProviders.isEmpty)
+    }
+
+    @Test
+    func `coding-agent notifications queue for ten seconds then retain unread alerts`() {
+        let start = Date(timeIntervalSince1970: 1000)
+        let first = NotchCodingAgentNotification(
+            id: UUID(), provider: "Codex", title: "Task finished", message: "Done", createdAt: start)
+        let second = NotchCodingAgentNotification(
+            id: UUID(), provider: "Claude Code", title: "Needs input", message: "Approve", createdAt: start)
+        var queue = NotchNotificationQueue()
+
+        queue.enqueue(first, now: start)
+        queue.enqueue(second, now: start)
+        #expect(queue.active == first)
+        #expect(queue.pending == [second])
+        queue.advance(now: start.addingTimeInterval(9.99))
+        #expect(queue.active == first)
+        #expect(queue.unreadCount == 0)
+
+        queue.advance(now: start.addingTimeInterval(10))
+        #expect(queue.retained == [first])
+        #expect(queue.unreadCount == 1)
+        #expect(queue.active == second)
+        #expect(queue.activeUntil == start.addingTimeInterval(20))
+
+        queue.advance(now: start.addingTimeInterval(19.99))
+        #expect(queue.retained == [first])
+        queue.advance(now: start.addingTimeInterval(20))
+        #expect(queue.retained == [first, second])
+        #expect(queue.unreadCount == 2)
+        #expect(queue.active == nil)
+    }
+
+    @Test
+    func `opening retained notifications clears unread count without deleting alerts`() {
+        let start = Date(timeIntervalSince1970: 2000)
+        var queue = NotchNotificationQueue()
+        queue.enqueue(
+            NotchCodingAgentNotification(
+                provider: "Cursor", title: "Task failed", message: "See terminal", createdAt: start),
+            now: start)
+        queue.advance(now: start.addingTimeInterval(NotchNotificationQueue.displayDuration))
+        #expect(queue.unreadCount == 1)
+        queue.markUnreadRead()
+        #expect(queue.unreadCount == 0)
+        #expect(queue.retained.count == 1)
+    }
+
+    @Test
+    @MainActor
+    func `notification source accepts supported hook events and ignores clears or unknown sources`() throws {
+        let now = Date(timeIntervalSince1970: 3000)
+        let line = Data(
+            #"{"source":"claude","type":"waiting","title":"Waiting for input","message":"Approve the command","ttl":3}"#
+                .utf8)
+        let event = try #require(NotchAgentEventSource.notification(from: line, now: now))
+        #expect(event.provider == "Claude Code")
+        #expect(event.title == "Waiting for input")
+        #expect(event.message == "Approve the command")
+        #expect(event.createdAt == now)
+
+        let clear = Data(#"{"source":"claude","type":"clear","title":"stale","message":"stale"}"#.utf8)
+        #expect(NotchAgentEventSource.notification(from: clear, now: now) == nil)
+        let unknown = Data(#"{"source":"slack","type":"completed","title":"done","message":"done"}"#.utf8)
+        #expect(NotchAgentEventSource.notification(from: unknown, now: now) == nil)
+        #expect(NotchAgentEventSource.notification(from: Data("not json".utf8), now: now) == nil)
+    }
+
+    @Test
+    @MainActor
+    func `notification source skips startup history and handles partial oversized and truncated lines`() throws {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notch-agent-events-\(UUID().uuidString).jsonl")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let existing = #"{"source":"codex","type":"completed","title":"old","message":"history"}"#
+            + "\n"
+            + #"{"source":"claude","type":"waiting","title":"partial","message":"old"}"#
+        try Data(existing.utf8).write(to: fileURL)
+
+        var received: [NotchCodingAgentNotification] = []
+        let source = NotchAgentEventSource(fileURL: fileURL) { event in
+            received.append(event)
+        }
+        let start = Date(timeIntervalSince1970: 5000)
+        source.pollForTesting(now: start)
+        #expect(received.isEmpty)
+
+        func append(_ data: Data) throws {
+            let handle = try FileHandle(forWritingTo: fileURL)
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: data)
+        }
+
+        // Completing the old startup partial line must not replay it. A new line
+        // appended after that partial data is still delivered.
+        try append(Data("history-tail\n".utf8))
+        source.pollForTesting(now: start.addingTimeInterval(1))
+        #expect(received.isEmpty)
+        try append(Data("{\"source\":\"codex\",\"type\":\"completed\",\"title\":\"new".utf8))
+        source.pollForTesting(now: start.addingTimeInterval(2))
+        #expect(received.isEmpty)
+        try append(Data("\", \"message\":\"done\"}\n".utf8))
+        source.pollForTesting(now: start.addingTimeInterval(3))
+        #expect(received.map(\.title) == ["new"])
+        #expect(received.first?.createdAt == start.addingTimeInterval(3))
+
+        try append(Data((String(repeating: "x", count: 17000) + "\nnot json\n").utf8))
+        source.pollForTesting(now: start.addingTimeInterval(4))
+        #expect(received.count == 1)
+
+        // A truncation resets the offset and accepts the replacement's new event.
+        let replacement = #"{"source":"cursor","type":"failed","title":"replacement","message":"done"}"# + "\n"
+        try Data(replacement.utf8).write(to: fileURL)
+        source.pollForTesting(now: start.addingTimeInterval(5))
+        #expect(received.map(\.title) == ["new", "replacement"])
+    }
+
+    @Test
+    @MainActor
+    func `notification source reads a new file created after launch`() throws {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notch-agent-events-\(UUID().uuidString).jsonl")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        var received: [NotchCodingAgentNotification] = []
+        let source = NotchAgentEventSource(fileURL: fileURL) { event in
+            received.append(event)
+        }
+        source.start()
+        source.stop()
+
+        let start = Date(timeIntervalSince1970: 6000)
+        let event = #"{"source":"cursor","type":"completed","title":"first event","message":"new file"}"# + "\n"
+        try Data(event.utf8).write(to: fileURL)
+        source.pollForTesting(now: start)
+        #expect(received.map(\.title) == ["first event"])
+        #expect(received.first?.createdAt == start)
+    }
+
+    @Test
+    func `notification queue starts empty and bounds pending and retained state`() {
+        let start = Date(timeIntervalSince1970: 4000)
+        var queue = NotchNotificationQueue()
+        #expect(queue.active == nil)
+        #expect(queue.retained.isEmpty)
+        #expect(queue.unreadCount == 0)
+        for index in 0..<(NotchNotificationQueue.maxPendingCount + 5) {
+            queue.enqueue(
+                NotchCodingAgentNotification(
+                    provider: "Codex", title: "Alert \(index)", message: "", createdAt: start),
+                now: start)
+        }
+        #expect(queue.pending.count == NotchNotificationQueue.maxPendingCount)
+        for index in 0..<(NotchNotificationQueue.maxPendingCount + 5) {
+            queue.advance(now: start.addingTimeInterval(Double(index + 1) * NotchNotificationQueue.displayDuration))
+        }
+        #expect(queue.retained.count <= NotchNotificationQueue.maxRetainedCount)
+        #expect(queue.unreadCount <= NotchNotificationQueue.maxRetainedCount)
+    }
+
+    @Test
+    func `notification geometry adds one row only while a banner is active`() throws {
+        let geometry = try #require(NotchGeometry(
+            screenFrame: CGRect(x: 0, y: 0, width: 1512, height: 982),
+            safeAreaTop: 32,
+            leftArea: CGRect(x: 0, y: 950, width: 656, height: 32),
+            rightArea: CGRect(x: 856, y: 950, width: 656, height: 32)))
+        #expect(geometry.frame(expanded: false).height == geometry.compactSize.height)
+        #expect(geometry.frame(expanded: false, notificationVisible: true).height
+            == geometry.notificationCompactSize.height)
+        #expect(geometry.frame(expanded: true, notificationVisible: true).height
+            == geometry.notificationExpandedSize.height)
     }
 
     @Test(arguments: [-20.0, 0, 42.5, 100, 150])

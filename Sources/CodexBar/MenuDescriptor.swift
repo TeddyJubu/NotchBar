@@ -80,6 +80,7 @@ struct MenuDescriptor {
         case quit
         case copyError(String)
         case focusAgentSession(AgentSession, remoteHost: String?)
+        case showNotchAlerts
     }
 
     var sections: [Section]
@@ -99,6 +100,7 @@ struct MenuDescriptor {
         agentSessionsHideUnreachableHosts: Bool = false,
         localAgentSessions: [AgentSession] = [],
         remoteAgentHosts: [RemoteSessionHostResult] = [],
+        includeNotchSection: Bool = false,
         now: Date = Date()) -> MenuDescriptor
     {
         var sections: [Section] = []
@@ -159,9 +161,27 @@ struct MenuDescriptor {
                 hideUnreachableHosts: agentSessionsHideUnreachableHosts,
                 now: now))
         }
+        if includeNotchSection {
+            sections.append(Self.notchSection())
+        }
         sections.append(Self.metaSection(updateReady: updateReady))
 
         return MenuDescriptor(sections: sections)
+    }
+
+    /// Keyboard-reachable path to the ALERTS tab. The item carries no key
+    /// equivalent (existing tree uses ⌘R/⌘,/⌘Q only, so nothing conflicts) and
+    /// no global hotkey; it orders + makes-key the panel, which is the
+    /// non-click key path that breaks the Full Keyboard Access circularity.
+    static func notchSection() -> Section {
+        Section(entries: [
+            .text("Notch", .headline),
+            .action("Show Alerts", .showNotchAlerts),
+        ])
+    }
+
+    static func notchSectionEnabled(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: "notchUsageEnabled") as? Bool ?? true
     }
 
     static func agentSessionsSection(
@@ -816,7 +836,7 @@ extension MenuDescriptor.MenuAction {
         case .loginToProvider: MenuDescriptor.MenuActionSystemImage.loginToProvider.rawValue
         case .openCodexWorkspaces: MenuDescriptor.MenuActionSystemImage.workspaces.rawValue
         case .copyError: MenuDescriptor.MenuActionSystemImage.copyError.rawValue
-        case .focusAgentSession:
+        case .focusAgentSession, .showNotchAlerts:
             nil
         }
     }

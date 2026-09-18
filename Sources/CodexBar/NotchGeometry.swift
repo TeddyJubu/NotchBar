@@ -15,7 +15,7 @@ struct NotchGeometry {
               let leftArea, let rightArea
         else { return nil }
         let gap = rightArea.minX - leftArea.maxX
-        guard gap.isFinite, gap > 0, gap + 152 <= screenFrame.width else { return nil }
+        guard gap.isFinite, gap > 0, gap <= screenFrame.width else { return nil }
         self.screenFrame = screenFrame
         self.notchWidth = gap
         self.closedHeight = safeAreaTop
@@ -23,17 +23,52 @@ struct NotchGeometry {
     }
 
     var compactSize: CGSize {
-        CGSize(width: self.notchWidth + 152, height: self.closedHeight)
+        CGSize(
+            width: min(self.screenFrame.width, max(210, self.notchWidth)),
+            height: min(self.screenFrame.height, self.closedHeight + 20))
+    }
+
+    var notificationCompactSize: CGSize {
+        CGSize(
+            width: self.compactSize.width,
+            height: min(self.screenFrame.height, self.compactSize.height + 20))
     }
 
     var expandedSize: CGSize {
         CGSize(
             width: min(self.screenFrame.width, max(420, self.compactSize.width)),
-            height: min(self.screenFrame.height, self.closedHeight + 310))
+            height: min(self.screenFrame.height, self.compactSize.height + 310))
     }
 
-    func frame(expanded: Bool) -> CGRect {
-        let size = expanded ? self.expandedSize : self.compactSize
+    var notificationExpandedSize: CGSize {
+        CGSize(
+            width: self.expandedSize.width,
+            height: min(self.screenFrame.height, self.expandedSize.height + 20))
+    }
+
+    /// Taller T2 takeover height: severity row + title/message + actions.
+    static let expandingNoticeHeight: CGFloat = 56
+
+    var expandingNoticeCompactSize: CGSize {
+        CGSize(
+            width: self.compactSize.width,
+            height: min(self.screenFrame.height, self.compactSize.height + Self.expandingNoticeHeight))
+    }
+
+    var expandingNoticeExpandedSize: CGSize {
+        CGSize(
+            width: self.expandedSize.width,
+            height: min(self.screenFrame.height, self.expandedSize.height + Self.expandingNoticeHeight))
+    }
+
+    func frame(expanded: Bool, notificationVisible: Bool = false, expandingNoticeVisible: Bool = false) -> CGRect {
+        let size: CGSize = if expandingNoticeVisible {
+            expanded ? self.expandingNoticeExpandedSize : self.expandingNoticeCompactSize
+        } else if notificationVisible {
+            expanded ? self.notificationExpandedSize : self.notificationCompactSize
+        } else {
+            expanded ? self.expandedSize : self.compactSize
+        }
         return CGRect(
             x: min(
                 max(self.centerX - size.width / 2, self.screenFrame.minX),
@@ -65,6 +100,21 @@ struct NotchUsageProvider: Identifiable {
     let windows: [NotchUsageWindow]
     let updatedAt: Date?
     let error: String?
+    var isAppRunning = true
+
+    func appIsRunning(in bundleIdentifiers: Set<String>) -> Bool {
+        let bundleIdentifier: String
+        // Provider-specific by design: desktop bundle IDs are app identities, not usage-provider IDs.
+        switch ProviderInstanceID(rawValue: self.id)?.firstPartyProvider {
+        case .codex: bundleIdentifier = "com.openai.codex"
+        case .claude: bundleIdentifier = "com.anthropic.claudefordesktop"
+        case .cursor: bundleIdentifier = "com.todesktop.230313mzl4w4u92"
+        case .antigravity: bundleIdentifier = "com.google.antigravity"
+        case .windsurf: bundleIdentifier = "com.exafunction.windsurf"
+        default: return true
+        }
+        return bundleIdentifiers.contains(bundleIdentifier)
+    }
 
     @MainActor
     static func usageWindows(snapshot: UsageSnapshot?, provider: UsageProvider?) -> [NotchUsageWindow] {
@@ -100,6 +150,10 @@ struct NotchUsageProvider: Identifiable {
 struct NotchUsagePresentation {
     var providers: [NotchUsageProvider]
     var selectedID: String?
+    var compactProviders: [NotchUsageProvider] {
+        Array(self.providers.prefix(3))
+    }
+
     var selected: NotchUsageProvider? {
         self.providers.first { $0.id == self.selectedID } ?? self.providers.first
     }
